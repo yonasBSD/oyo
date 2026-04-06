@@ -3,8 +3,8 @@
 use crate::blame::BlameInfo;
 use crate::config::{
     BlameMode, DiffExtentMarkerMode, DiffExtentMarkerScope, DiffForegroundMode, DiffHighlightMode,
-    FileCountMode, FoldContextMode, HunkWrapMode, ModifiedStepMode, ResolvedTheme, StepWrapMode,
-    SyntaxMode,
+    FileCountMode, FoldContextMode, HunkWrapMode, MentionFileScope, MentionFinder,
+    ModifiedStepMode, ResolvedTheme, StepWrapMode, SyntaxMode,
 };
 use crate::syntax::{SyntaxCache, SyntaxEngine};
 use crate::time_format::TimeFormatter;
@@ -15,6 +15,7 @@ use ratatui::style::Color;
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -25,6 +26,7 @@ mod files;
 mod navigation;
 mod palette;
 mod playback;
+mod review;
 mod search;
 mod syntax;
 mod types;
@@ -97,6 +99,8 @@ pub struct App {
     pub file_panel_width: u16,
     /// File panel full area (x, y, width, height)
     pub file_panel_rect: Option<(u16, u16, u16, u16)>,
+    /// Diff content area (x, y, width, height)
+    pub diff_view_area: Option<(u16, u16, u16, u16)>,
     /// True when dragging the file panel separator
     pub file_panel_resizing: bool,
     /// File list scroll offset
@@ -362,6 +366,38 @@ pub struct App {
     file_search_list_count: usize,
     /// Quick file search list item height (rows per item)
     file_search_item_height: u16,
+    /// Comment capture state enabled for the current app session
+    review_mode: bool,
+    /// Collected review comments for current session
+    review_comments: Vec<review::ReviewComment>,
+    /// Active inline comment editor state
+    review_editor: Option<review::ReviewEditorState>,
+    /// Autosave path for current review session
+    review_session_path: Option<PathBuf>,
+    /// Diff fingerprint used for resume/autosave matching
+    review_diff_fingerprint: String,
+    /// Repository root key used in review session metadata
+    review_repo_root: Option<String>,
+    /// Session creation timestamp for persisted review state
+    review_session_created_at: u64,
+    /// Next comment id for this session
+    review_next_comment_id: u64,
+    /// Review output prepared on submit+quit
+    review_submission_output: Option<String>,
+    /// Click hitboxes for rendered review comment previews
+    review_preview_boxes: Vec<review::ReviewPreviewBox>,
+    /// Active inline mention picker state for comment editor
+    review_mention_picker: Option<review::ReviewMentionPickerState>,
+    /// File source scope for @ mention candidates.
+    pub review_mention_file_scope: MentionFileScope,
+    /// Finder backend for @ mention file candidates.
+    pub review_mention_finder: MentionFinder,
+    /// Cached fzf availability probe result.
+    review_mention_fzf_available: Option<bool>,
+    /// Cached git-aware repository file list for @ mention candidates.
+    review_repo_file_cache: Option<Vec<String>>,
+    /// Monotonic revision for review state changes (cache invalidation)
+    review_revision: u64,
     /// Last matched display index for search navigation
     search_last_target: Option<usize>,
     /// Pending scroll to a search target
@@ -484,6 +520,7 @@ impl App {
             file_panel_visible: true,
             file_panel_width: 30,
             file_panel_rect: None,
+            diff_view_area: None,
             file_panel_resizing: false,
             file_list_scroll: 0,
             file_list_area: None,
@@ -618,6 +655,22 @@ impl App {
             file_search_list_start: 0,
             file_search_list_count: 0,
             file_search_item_height: 1,
+            review_mode: false,
+            review_comments: Vec::new(),
+            review_editor: None,
+            review_session_path: None,
+            review_diff_fingerprint: String::new(),
+            review_repo_root: None,
+            review_session_created_at: 0,
+            review_next_comment_id: 1,
+            review_submission_output: None,
+            review_preview_boxes: Vec::new(),
+            review_mention_picker: None,
+            review_mention_file_scope: MentionFileScope::default(),
+            review_mention_finder: MentionFinder::default(),
+            review_mention_fzf_available: None,
+            review_repo_file_cache: None,
+            review_revision: 0,
             search_last_target: None,
             needs_scroll_to_search: false,
             search_target: None,
